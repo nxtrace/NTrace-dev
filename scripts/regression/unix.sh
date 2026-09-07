@@ -219,6 +219,38 @@ run_cmd_check() {
   record "${name}" PASS "${note}"
 }
 
+check_mtr_json() {
+  local name="$1" mode="$2" binary="$3" flags="$4"
+  local out="${ART_DIR}/${name}.json" rc=0
+  run_timeout_cmd 30 "\"${binary}\" ${flags} --json --data-provider disable-geoip -n -q 2 -i 100 --timeout 500 -m 1 127.0.0.1" >"${out}" 2>"${out}.stderr" || rc=$?
+  if [[ "${rc}" != 0 ]]; then
+    record "${name}" FAIL "MTR JSON exit=${rc}"
+    return
+  fi
+  if python3 - "${out}" "${mode}" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    if sys.argv[2] == "report":
+        report = json.load(f)
+        assert report["schema_version"] == 1 and report["end_reason"] == "completed"
+        assert isinstance(report["stats"], list) and report["stats"]
+        assert sum(row["snt"] for row in report["stats"]) == 2
+    else:
+        events = [json.loads(line) for line in f]
+        assert events[0]["type"] == "start" and events[-1]["type"] == "end"
+        assert events[-1]["end_reason"] == "completed"
+        assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
+        assert all(e["schema_version"] == 1 for e in events)
+        assert sum(e["type"] == "probe" for e in events) == 2
+PY
+  then
+    record "${name}" PASS "MTR JSON ${mode} contract"
+  else
+    record "${name}" FAIL "MTR JSON ${mode} contract"
+  fi
+}
+
 check_json_pure() {
   local name="$1"
   local note="$2"
@@ -533,6 +565,14 @@ check_output_file output_default 'Default output file path' "TMPDIR=\"${DEFAULT_
 run_cmd mtu_text 'MTU text mode' "\"${BIN}\" --no-color --mtu --timeout 1000 -q 1 -m 3 1.1.1.1"
 check_mtu_tty_color mtu_tty_color 'MTU TTY colorized output' "\"${BIN}\" --mtu --timeout 1000 -q 1 -m 3 1.1.1.1"
 check_mtu_non_tty_plain mtu_non_tty_plain 'MTU non-TTY output has no ANSI' "\"${BIN}\" --mtu --timeout 1000 -q 1 -m 3 1.1.1.1"
+check_mtr_json mtr_json_live stream "${BIN}" "--mtr"
+check_mtr_json mtr_json_report report "${BIN}" "-r"
+check_mtr_json mtr_json_wide report "${BIN}" "-w"
+check_mtr_json tiny_json_live stream "${TINY}" "--mtr -y 4"
+check_mtr_json tiny_json_report report "${TINY}" "-r"
+check_mtr_json ntr_json_live stream "${NTR}" ""
+check_mtr_json ntr_json_report report "${NTR}" "-w"
+
 run_cmd mtr_report 'MTR report ICMP' "\"${BIN}\" --no-color -r -q 2 -i 300 --timeout 1000 -m 4 1.1.1.1"
 run_cmd mtr_wide 'MTR wide + show-ips' "\"${BIN}\" --no-color -w --show-ips -q 2 -i 300 --timeout 1000 -m 4 1.1.1.1"
 run_cmd mtr_raw 'MTR raw stream' "\"${BIN}\" --no-color -r --raw -q 2 -i 300 --timeout 1000 -m 4 1.1.1.1"

@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -265,13 +266,15 @@ func mtrFillGeoRDNS(workers *mtrWorkerSession, res *Result, config Config) {
 // ---------------------------------------------------------------------------
 
 type mtrICMPEngine struct {
-	config  Config
-	spec    atomic.Pointer[internal.ICMPSpec]
-	specMu  sync.Mutex
-	echoID  atomic.Int32
-	srcIP   net.IP
-	ipVer   int
-	workers *mtrWorkerSession
+	config         Config
+	spec           atomic.Pointer[internal.ICMPSpec]
+	specMu         sync.Mutex
+	echoID         atomic.Int32
+	srcIP          net.IP
+	ipVer          int
+	workers        *mtrWorkerSession
+	listenerCancel context.CancelFunc
+	listenerDone   chan struct{}
 
 	// 单调递增序列号，避免跨轮 seq 冲突
 	seqCounter atomic.Uint32
@@ -367,7 +370,10 @@ func (e *mtrICMPEngine) startMTRSession(workers *mtrWorkerSession) error {
 	ctx := workers.ctx
 	spec := internal.NewICMPSpec(e.ipVer, e.config.ICMPMode, int(e.echoID.Load()), e.srcIP, e.config.DstIP)
 	applyICMPSourceDevice(spec, e.config.OSType, e.config.SourceDevice)
-	spec.InitICMP()
+	if err := spec.InitICMP(); err != nil {
+		spec.Close()
+		return wrapProbeSetupError(err)
+	}
 	e.spec.Store(spec)
 
 	e.notifyCh = make(chan struct{}, 1)
@@ -375,8 +381,7 @@ func (e *mtrICMPEngine) startMTRSession(workers *mtrWorkerSession) error {
 	e.replied = make(map[int]*mtrProbeReply)
 	e.probeNotify = make(map[int]chan struct{})
 
-	ready := make(chan struct{})
-	workers.Go("mtr.icmp-listener", func() { spec.ListenICMP(ctx, ready, e.onICMP) })
+	ready := e.startICMPListener(spec)
 	if err := waitMTRListenerReady(ctx, ready, "ICMP listener startup timeout"); err != nil {
 		return err
 	}
@@ -386,9 +391,34 @@ func (e *mtrICMPEngine) startMTRSession(workers *mtrWorkerSession) error {
 func (e *mtrICMPEngine) close() {
 	e.specMu.Lock()
 	defer e.specMu.Unlock()
+	e.stopICMPListener()
+}
+
+// Caller holds specMu; each rotation owns and joins its listener.
+func (e *mtrICMPEngine) startICMPListener(spec *internal.ICMPSpec) chan struct{} {
+	ctx, cancel := context.WithCancel(e.workers.ctx)
+	done, ready := make(chan struct{}), make(chan struct{})
+	e.listenerCancel, e.listenerDone = cancel, done
+	e.workers.Go("mtr.icmp-listener", func() {
+		defer close(done)
+		if err := spec.ListenICMP(ctx, ready, e.onICMP); err != nil && ctx.Err() == nil {
+			e.workers.cancel(wrapProbeSetupError(err))
+		}
+	})
+	return ready
+}
+
+func (e *mtrICMPEngine) stopICMPListener() {
+	if e.listenerCancel != nil {
+		e.listenerCancel()
+	}
 	if spec := e.spec.Swap(nil); spec != nil {
 		spec.Close()
 	}
+	if e.listenerDone != nil {
+		<-e.listenerDone
+	}
+	e.listenerCancel, e.listenerDone = nil, nil
 }
 
 // resetFinalTTL 清除已知目的地 TTL 缓存（r 键重置统计时调用）。
@@ -457,16 +487,17 @@ func seqWillWrap(seqCounter uint32, probeCount int) bool {
 func (e *mtrICMPEngine) rotateEngine(ctx context.Context) error {
 	e.specMu.Lock()
 	defer e.specMu.Unlock()
-	if spec := e.spec.Swap(nil); spec != nil {
-		spec.Close()
-	}
+	e.stopICMPListener()
 
 	e.echoID.Store(int32(newMTREchoID()))
 	e.seqCounter.Store(0)
 
 	spec := internal.NewICMPSpec(e.ipVer, e.config.ICMPMode, int(e.echoID.Load()), e.srcIP, e.config.DstIP)
 	applyICMPSourceDevice(spec, e.config.OSType, e.config.SourceDevice)
-	spec.InitICMP()
+	if err := spec.InitICMP(); err != nil {
+		spec.Close()
+		return wrapProbeSetupError(err)
+	}
 	e.spec.Store(spec)
 
 	e.mu.Lock()
@@ -481,11 +512,10 @@ func (e *mtrICMPEngine) rotateEngine(ctx context.Context) error {
 	e.probeNotify = make(map[int]chan struct{})
 	e.mu.Unlock()
 
-	ready := make(chan struct{})
 	if e.workers == nil {
-		return fmt.Errorf("ICMP listener has no MTR worker session")
+		return wrapProbeSetupError(fmt.Errorf("ICMP listener has no MTR worker session"))
 	}
-	e.workers.Go("mtr.icmp-listener", func() { spec.ListenICMP(e.workers.ctx, ready, e.onICMP) })
+	ready := e.startICMPListener(spec)
 	return waitMTRListenerReady(ctx, ready, "ICMP listener restart timeout on echoID rotation")
 }
 
@@ -496,9 +526,9 @@ func waitMTRListenerReady(ctx context.Context, ready <-chan struct{}, timeoutMes
 	case <-ready:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return context.Cause(ctx)
 	case <-timer.C:
-		return fmt.Errorf("%s", timeoutMessage)
+		return wrapProbeSetupError(fmt.Errorf("%s", timeoutMessage))
 	}
 }
 
@@ -507,7 +537,7 @@ func waitMTRTimer(ctx context.Context, delay time.Duration) error {
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return context.Cause(ctx)
 	case <-timer.C:
 		return nil
 	}
@@ -773,7 +803,7 @@ func (e *mtrICMPEngine) probeRoundDelay() time.Duration {
 func (e *mtrICMPEngine) sendProbeSweep(ctx context.Context, round mtrProbeRoundState) error {
 	for ttl := round.beginHop; ttl <= round.effectiveMax; ttl++ {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return context.Cause(ctx)
 		}
 		sent, err := e.sendProbeForTTL(ctx, ttl, round.roundID)
 		if err != nil {
@@ -809,7 +839,11 @@ func (e *mtrICMPEngine) sendProbeForTTL(ctx context.Context, ttl int, roundID ui
 		}
 		e.mu.Unlock()
 		if ctx.Err() != nil {
-			return false, ctx.Err()
+			return false, context.Cause(ctx)
+		}
+		var setup *probeSetupError
+		if errors.As(err, &setup) {
+			return false, err
 		}
 		return false, nil
 	}
@@ -975,9 +1009,13 @@ func (e *mtrICMPEngine) ProbeTTL(ctx context.Context, ttl int) (mtrProbeResult, 
 		e.closeProbeNotifyLocked(seq)
 		e.mu.Unlock()
 		if ctx.Err() != nil {
-			return mtrProbeResult{TTL: ttl}, ctx.Err()
+			return mtrProbeResult{TTL: ttl}, context.Cause(ctx)
 		}
 		// Send failed: treat as timeout (no response for this TTL)
+		var setup *probeSetupError
+		if errors.As(err, &setup) {
+			return mtrProbeResult{TTL: ttl}, err
+		}
 		return mtrProbeResult{TTL: ttl}, nil
 	}
 
@@ -1030,7 +1068,7 @@ func (e *mtrICMPEngine) ProbeTTL(ctx context.Context, ttl int) (mtrProbeResult, 
 		delete(e.sentAt, seq)
 		delete(e.probeNotify, seq)
 		e.mu.Unlock()
-		return mtrProbeResult{TTL: ttl}, ctx.Err()
+		return mtrProbeResult{TTL: ttl}, context.Cause(ctx)
 	}
 }
 

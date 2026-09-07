@@ -100,12 +100,12 @@ func TestModeFlagsMatchFlavorCapabilities(t *testing.T) {
 	registerPacketIntervalFlag(parser)
 	registerFileFlag(parser)
 	usage := parser.Usage(nil)
-	for _, flag := range []string{"--traceroute", "--json", "--classic", "--output", "--send-time", "--file"} {
+	for _, flag := range []string{"--traceroute", "--classic", "--output", "--send-time", "--file"} {
 		if strings.Contains(usage, flag) != enableTraceroute {
 			t.Errorf("%s availability incorrect in %s", flag, appBinName)
 		}
 	}
-	for _, flag := range []string{"--report", "--wide", "--show-ips", "--ipinfo"} {
+	for _, flag := range []string{"--json", "--report", "--wide", "--show-ips", "--ipinfo"} {
 		if !strings.Contains(usage, flag) {
 			t.Errorf("missing %s in %s", flag, appBinName)
 		}

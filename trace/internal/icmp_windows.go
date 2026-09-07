@@ -33,6 +33,7 @@ type ICMPSpec struct {
 	icmp4        *ipv4.PacketConn
 	icmp6        *ipv6.PacketConn
 	sendHandle   wd.Handle
+	closed       bool // protected by hopLimitLock, including lazy send-handle initialization
 	sendAddr     wd.Address
 	hopLimitLock sync.Mutex
 }
@@ -42,7 +43,15 @@ func ListenPacket(network string, laddr string) (net.PacketConn, error) {
 }
 
 func (s *ICMPSpec) Close() {
-	_ = s.icmp.Close()
+	s.hopLimitLock.Lock()
+	defer s.hopLimitLock.Unlock()
+	if s.closed {
+		return
+	}
+	s.closed = true
+	if s.icmp != nil {
+		_ = s.icmp.Close()
+	}
 	if s.sendHandle != 0 {
 		_ = s.sendHandle.Close()
 	}
@@ -89,17 +98,21 @@ func (s *ICMPSpec) resolveICMPMode() int {
 	return 2
 }
 
-func (s *ICMPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, seq int)) {
+func (s *ICMPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, seq int)) error {
 	switch s.resolveICMPMode() {
 	case 1:
-		s.listenICMPSock(ctx, ready, onICMP)
+		return s.listenICMPSock(ctx, ready, onICMP)
 	case 2:
-		s.listenICMPWinDivert(ctx, ready, onICMP)
+		return s.listenICMPWinDivert(ctx, ready, onICMP)
 	}
+	return nil
 }
 
-func (s *ICMPSpec) listenICMPWinDivert(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, seq int)) {
-	handle, closeHandle := openWinDivertSniffHandle(ctx, winDivertICMPFilter(s.IPVersion, s.SrcIP), "ListenICMP")
+func (s *ICMPSpec) listenICMPWinDivert(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, seq int)) error {
+	handle, closeHandle, err := openWinDivertSniffHandle(ctx, winDivertICMPFilter(s.IPVersion, s.SrcIP), "ListenICMP")
+	if err != nil {
+		return err
+	}
 	defer closeHandle()
 	close(ready)
 
@@ -107,12 +120,12 @@ func (s *ICMPSpec) listenICMPWinDivert(ctx context.Context, ready chan struct{},
 	var addr wd.Address
 
 	for {
-		raw, finish, ok := receiveWinDivertPacket(ctx, handle, buf, &addr)
-		if !ok {
+		raw, finish, err := receiveWinDivertPacket(ctx, handle, buf, &addr)
+		if err != nil {
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
-			continue
+			return err
 		}
 
 		packet, ok := decodeWinDivertICMPPacket(s.IPVersion, raw)
@@ -237,9 +250,12 @@ func shouldUseICMPv6RawSend(ip6 *layers.IPv6) bool {
 func (s *ICMPSpec) sendICMPv6WithWinDivert(ip6 *layers.IPv6, icmpHdr, icmpEcho gopacket.SerializableLayer, payload []byte) (time.Time, error) {
 	s.hopLimitLock.Lock()
 	defer s.hopLimitLock.Unlock()
+	if s.closed {
+		return time.Time{}, net.ErrClosed
+	}
 
 	if err := s.ensureICMPSendHandle(true); err != nil {
-		return time.Time{}, err
+		return time.Time{}, &InitializationError{Err: err}
 	}
 
 	buf := gopacket.NewSerializeBuffer()

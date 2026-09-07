@@ -631,6 +631,20 @@ nexttrace -r --raw 1.1.1.1
 nexttrace -t --tcp --max-hops 20 --first 3 --no-rdns 8.8.8.8
 ```
 
+MTR JSON is available in all three builds:
+
+```bash
+nexttrace --mtr --json 1.1.1.1        # continuous NDJSON events
+nexttrace --mtr --json -q 10 1.1.1.1  # finite NDJSON events
+nexttrace -r --json -q 10 1.1.1.1     # one final JSON report
+nexttrace -w --json -q 10 1.1.1.1     # identical to -r --json
+ntr --json 1.1.1.1                    # continuous NDJSON events
+```
+
+JSON always includes all available metadata (FULL), ignores `-y`, and honors Geo/PTR/provider/language settings. `-r/-w --json` use the same wide collection rules. Streams run indefinitely when `-q` is omitted or nonpositive; JSON reports default to 10 probes per hop and reject explicit nonpositive counts. `--raw` and MTR `--json` are mutually exclusive. Bare `--json` in full/tiny retains traditional traceroute JSON, including after a future default-mode switch.
+
+NDJSON emits `start`, `probe`, `path_end`, and `end` objects with consecutive `seq` values. Reports emit exactly one object, including partial statistics on interruption or failure. Diagnostics go to stderr. Exit codes: completion `0`, runtime/initialization error `1`, invalid arguments `2`, SIGINT `130`, SIGTERM `143`. Completion does not imply reachability; use `path_end`. See the [MTR JSON v1 contract and examples](docs/mtr-json.md).
+
 When running in a terminal (TTY), MTR mode uses an **interactive full-screen TUI**:
 
 - **`q` / `Q`** — quit (restores terminal, no output left behind)
@@ -701,7 +715,7 @@ In MTR mode (`--mtr`, `-r`, `-w`, including `--raw`), `-i/--ttl-time` sets the *
 
 > Note: `--show-ips` only takes effect in MTR mode (`--mtr`, `-r`, `-w`); otherwise it is ignored.
 >
-> Note: `--mtr` cannot be used together with `--traceroute`, `--table`, `--classic`, `--json`, `--output`, `--output-default`, `--route-path`, `--from`, `--fast-trace`, `--file`, or `--deploy`.
+> Note: `--mtr` cannot be used together with `--traceroute`, `--table`, `--classic`, `--output`, `--output-default`, `--route-path`, `--from`, `--fast-trace`, `--file`, or `--deploy`.
 
 #### `NextTrace` supports users to select their own IP API (currently supports: `NextTrace-API`, `IP.SB`, `IPInfo`, `IPInsight`, `IPAPI.com`, `IPInfoLocal`, `IPDB.One`, `CHUNZHEN`, `DN42`)
 
@@ -893,9 +907,10 @@ Arguments:
                                      default of 80 for "tcp", 33494 for "udp"
   -q  --queries                      Traceroute: latency samples per hop
                                      (default 3). MTR: max probes per hop. 0 =
-                                     unlimited in TUI/raw. When omitted: 10
-                                     with --report/--wide (including --raw),
-                                     otherwise unlimited
+                                     unlimited in TUI/raw/JSON streams. JSON
+                                     reports require a positive count. When
+                                     omitted: 10 with --report/--wide
+                                     (including --raw), otherwise unlimited
       --max-attempts                 Advanced: hard cap on probe packets per
                                      hop. Leave unset for auto sizing; raise on
                                      lossy links if --queries is not enough
@@ -930,7 +945,8 @@ Arguments:
                                      (/tmp/trace.log)
       --table                        Output trace results as a final summary
                                      table (traceroute report mode)
-  -j  --json                         Output trace results as JSON
+  -j  --json                         Output JSON; MTR streams NDJSON unless
+                                     --report/--wide is selected
   -c  --classic                      Classic Output trace results like
                                      BestTrace
       --dn42                         DN42 Mode
@@ -1006,7 +1022,7 @@ Arguments:
       --show-ips                     MTR only: display both PTR hostnames and
                                      numeric IPs (PTR first, IP in parentheses)
   -y  --ipinfo                       Set initial MTR TUI host info mode (0-4).
-                                     TUI only; ignored in --report/--raw.
+                                     TUI only; ignored in --report/--raw/--json.
                                      0:IP/PTR 1:ASN 2:City 3:Owner 4:Full.
                                      Default: 0
       --file                         Read IP Address or domain name from file

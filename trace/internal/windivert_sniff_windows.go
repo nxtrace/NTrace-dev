@@ -6,14 +6,12 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	"github.com/nxtrace/NTrace-core/util"
 	wd "github.com/xjasonlyu/windivert-go"
 )
 
@@ -28,11 +26,7 @@ type winDivertICMPPacket struct {
 	echoReply bool
 }
 
-var (
-	openWinDivertSniffCall = OpenWinDivertHandle
-	winDivertSniffFatal    = func(msg string) { log.Fatal(msg) }
-	winDivertSniffDevMode  = func() bool { return util.EnvDevMode }
-)
+var openWinDivertSniffCall = OpenWinDivertHandle
 
 func winDivertICMPFilter(ipVersion int, srcIP net.IP) string {
 	if ipVersion == 4 {
@@ -54,15 +48,11 @@ func winDivertTCPFilter(ipVersion int, srcIP net.IP, dstPort int) string {
 	)
 }
 
-func openWinDivertSniffHandle(ctx context.Context, filter, action string) (wd.Handle, func()) {
+func openWinDivertSniffHandle(ctx context.Context, filter, action string) (wd.Handle, func(), error) {
 	handle, err := openWinDivertSniffCall(filter, wd.FlagSniff|wd.FlagRecvOnly)
 	if err != nil {
 		msg := formatWinDivertRequiredError(fmt.Sprintf("Windows WinDivert 嗅探 (%s, filter=%q)", action, filter), err)
-		if winDivertSniffDevMode() {
-			panic(msg)
-		}
-		winDivertSniffFatal(msg)
-		panic(msg)
+		return 0, nil, fmt.Errorf("%s: %w", msg, err)
 	}
 
 	var closeOnce sync.Once
@@ -74,7 +64,7 @@ func openWinDivertSniffHandle(ctx context.Context, filter, action string) (wd.Ha
 
 	_ = handle.SetParam(wd.QueueLength, 8192)
 	_ = handle.SetParam(wd.QueueTime, 4000)
-	return handle, closeHandle
+	return handle, closeHandle, nil
 }
 
 func packetDecoderForIPVersion(ipVersion int) gopacket.Decoder {
@@ -84,27 +74,18 @@ func packetDecoderForIPVersion(ipVersion int) gopacket.Decoder {
 	return layers.LayerTypeIPv6
 }
 
-func receiveWinDivertPacket(ctx context.Context, handle wd.Handle, buf []byte, addr *wd.Address) ([]byte, time.Time, bool) {
-	select {
-	case <-ctx.Done():
-		return nil, time.Time{}, false
-	default:
+func receiveWinDivertPacket(ctx context.Context, handle wd.Handle, buf []byte, addr *wd.Address) ([]byte, time.Time, error) {
+	if ctx.Err() != nil {
+		return nil, time.Time{}, context.Cause(ctx)
 	}
-
 	n, err := handle.Recv(buf, addr)
 	if err != nil {
-		select {
-		case <-ctx.Done():
-			return nil, time.Time{}, false
-		default:
-			return nil, time.Time{}, false
-		}
+		return nil, time.Time{}, fmt.Errorf("WinDivert receive failed: %w", err)
 	}
-
 	finish := time.Now()
 	raw := make([]byte, n)
 	copy(raw, buf[:n])
-	return raw, finish, true
+	return raw, finish, nil
 }
 
 func decodeWinDivertICMPPacket(ipVersion int, raw []byte) (*winDivertICMPPacket, bool) {

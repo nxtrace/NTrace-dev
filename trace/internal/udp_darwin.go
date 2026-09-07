@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -33,7 +32,7 @@ type UDPSpec struct {
 	hopLimitLock sync.Mutex
 }
 
-func (s *UDPSpec) InitUDP() {
+func (s *UDPSpec) InitUDP() error {
 	network := "ip4:udp"
 	if s.IPVersion == 6 {
 		network = "ip6:udp"
@@ -41,18 +40,12 @@ func (s *UDPSpec) InitUDP() {
 
 	udp, err := net.ListenPacket(network, s.SrcIP.String())
 	if err != nil {
-		if util.EnvDevMode {
-			panic(fmt.Errorf("(InitUDP) ListenPacket(%s, %s) failed: %v", network, s.SrcIP, err))
-		}
-		log.Fatalf("(InitUDP) ListenPacket(%s, %s) failed: %v", network, s.SrcIP, err)
+		return fmt.Errorf("(InitUDP) ListenPacket(%s, %s) failed: %w", network, s.SrcIP, err)
 	}
 	if s.SourceDevice != "" {
 		if err := bindPacketConnToSourceDevice(udp, s.IPVersion, s.SourceDevice); err != nil {
 			_ = udp.Close()
-			if util.EnvDevMode {
-				panic(fmt.Errorf("(InitUDP) bind source device %q failed: %v", s.SourceDevice, err))
-			}
-			log.Fatalf("(InitUDP) bind source device %q failed: %v", s.SourceDevice, err)
+			return fmt.Errorf("(InitUDP) bind source device %q failed: %w", s.SourceDevice, err)
 		}
 	}
 	s.udp = udp
@@ -62,14 +55,19 @@ func (s *UDPSpec) InitUDP() {
 	} else {
 		s.udp6 = ipv6.NewPacketConn(s.udp)
 	}
+	return nil
 }
 
 func (s *UDPSpec) Close() {
-	_ = s.icmp.Close()
-	_ = s.udp.Close()
+	if s.icmp != nil {
+		_ = s.icmp.Close()
+	}
+	if s.udp != nil {
+		_ = s.udp.Close()
+	}
 }
 
-func (s *UDPSpec) ListenOut(ctx context.Context, ready chan struct{}, onOut func(srcPort, seq, ttl int, start time.Time)) {
+func (s *UDPSpec) ListenOut(ctx context.Context, ready chan struct{}, onOut func(srcPort, seq, ttl int, start time.Time)) error {
 	// 选择捕获设备与本地接口
 	dev := "en0"
 	if s.SourceDevice != "" {
@@ -82,10 +80,7 @@ func (s *UDPSpec) ListenOut(ctx context.Context, ready chan struct{}, onOut func
 	// 接口即使在 sudo 下也会拒绝 promisc，继续请求只会让探测直接失败。
 	handle, err := util.OpenLiveImmediate(dev, 65535, false, 4<<20)
 	if err != nil {
-		if util.EnvDevMode {
-			panic(fmt.Errorf("(ListenOut) pcap open failed on %s: %v", dev, err))
-		}
-		log.Fatalf("(ListenOut) pcap open failed on %s: %v", dev, err)
+		return fmt.Errorf("(ListenOut) pcap open failed on %s: %w", dev, err)
 	}
 	defer handle.Close()
 
@@ -100,10 +95,7 @@ func (s *UDPSpec) ListenOut(ctx context.Context, ready chan struct{}, onOut func
 	)
 
 	if err := handle.SetBPFFilter(filter); err != nil {
-		if util.EnvDevMode {
-			panic(fmt.Errorf("(ListenOut) set BPF failed: %v (filter=%q)", err, filter))
-		}
-		log.Fatalf("(ListenOut) set BPF failed: %v (filter=%q)", err, filter)
+		return fmt.Errorf("(ListenOut) set BPF failed: %w (filter=%q)", err, filter)
 	}
 
 	src := gopacket.NewPacketSource(handle, handle.LinkType())
@@ -113,10 +105,10 @@ func (s *UDPSpec) ListenOut(ctx context.Context, ready chan struct{}, onOut func
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case pkt, ok := <-pktCh:
 			if !ok {
-				return
+				return listenerStoppedError(ctx)
 			}
 
 			// 解包
@@ -146,8 +138,8 @@ func (s *UDPSpec) ListenOut(ctx context.Context, ready chan struct{}, onOut func
 	}
 }
 
-func (s *UDPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, data []byte)) {
-	s.listenICMPSock(ctx, ready, onICMP)
+func (s *UDPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, data []byte)) error {
+	return s.listenICMPSock(ctx, ready, onICMP)
 }
 
 func (s *UDPSpec) SendUDP(ctx context.Context, ipHdr gopacket.NetworkLayer, udpHdr *layers.UDP, payload []byte) (time.Time, error) {

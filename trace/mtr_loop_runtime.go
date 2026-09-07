@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -93,7 +94,7 @@ func (rt *mtrLoopRuntime) snapshotContextError() error {
 		return nil
 	}
 	rt.emitSnapshot()
-	return rt.ctx.Err()
+	return context.Cause(rt.ctx)
 }
 
 func (rt *mtrLoopRuntime) emitSnapshot() {
@@ -202,6 +203,11 @@ func (rt *mtrLoopRuntime) emitPreview(peeker mtrPeeker) {
 func (rt *mtrLoopRuntime) handleProbeError(err error) (bool, error) {
 	if rt.ctx.Err() != nil {
 		return false, rt.snapshotContextError()
+	}
+	var setup *probeSetupError
+	if errors.As(err, &setup) {
+		rt.emitSnapshot()
+		return false, err
 	}
 
 	rt.consecutiveErrors++

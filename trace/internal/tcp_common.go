@@ -3,18 +3,15 @@ package internal
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"time"
-
-	"github.com/nxtrace/NTrace-core/util"
 )
 
 func NewTCPSpec(IPVersion, ICMPMode int, srcIP, dstIP net.IP, dstPort int, pktSize int) *TCPSpec {
 	return &TCPSpec{IPVersion: IPVersion, ICMPMode: ICMPMode, SrcIP: srcIP, DstIP: dstIP, DstPort: dstPort, PktSize: pktSize}
 }
 
-func (s *TCPSpec) InitICMP() {
+func (s *TCPSpec) InitICMP() error {
 	network := "ip4:icmp"
 	if s.IPVersion == 6 {
 		network = "ip6:ipv6-icmp"
@@ -22,26 +19,27 @@ func (s *TCPSpec) InitICMP() {
 
 	icmpConn, err := net.ListenPacket(network, s.SrcIP.String())
 	if err != nil {
-		if util.EnvDevMode {
-			panic(fmt.Errorf("(InitICMP) ListenPacket(%s, %s) failed: %v", network, s.SrcIP, err))
-		}
-		log.Fatalf("(InitICMP) ListenPacket(%s, %s) failed: %v", network, s.SrcIP, err)
+		return fmt.Errorf("(InitICMP) ListenPacket(%s, %s) failed: %w", network, s.SrcIP, err)
 	}
 	s.icmp = icmpConn
+	return nil
 }
 
-func (s *TCPSpec) listenICMPSock(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, data []byte)) {
-	lc := NewPacketListener(s.icmp)
-	go lc.Start(ctx)
+func (s *TCPSpec) listenICMPSock(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, data []byte)) error {
+	lc, stop := startPacketListener(ctx, s.icmp)
+	defer stop()
 	close(ready)
 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case msg, ok := <-lc.Messages:
 			if !ok {
-				return
+				return listenerStoppedError(ctx)
+			}
+			if msg.Err != nil {
+				return msg.Err
 			}
 			finish, data, response, ok := s.decodeICMPSocketMessage(msg)
 			if ok {

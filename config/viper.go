@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +15,11 @@ import (
 var viperMu sync.RWMutex
 
 func InitConfig() {
+	_ = InitConfigWithWriter(os.Stdout)
+}
+
+// InitConfigWithWriter keeps machine-readable stdout separate from diagnostics.
+func InitConfigWithWriter(w io.Writer) error {
 	viperMu.Lock()
 	defer viperMu.Unlock()
 
@@ -72,20 +78,22 @@ func InitConfig() {
 	if err := viper.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
 		if errors.As(err, &notFound) {
-			fmt.Println("未能找到配置文件，我们将在您的运行目录为您创建 nt_config.yaml 默认配置")
+			_, _ = fmt.Fprintln(w, "未能找到配置文件，我们将在您的运行目录为您创建 nt_config.yaml 默认配置")
 			if err := viper.SafeWriteConfigAs("./nt_config.yaml"); err != nil {
-				fmt.Println("创建默认配置文件失败:", err)
-				return
+				_, _ = fmt.Fprintln(w, "创建默认配置文件失败:", err)
+				return err
 			}
 			if err := viper.ReadInConfig(); err != nil {
-				fmt.Println("加载默认配置失败:", err)
+				_, _ = fmt.Fprintln(w, "加载默认配置失败:", err)
+				return err
 			}
-			return
+			return nil
 		}
 
-		fmt.Println("加载配置文件失败:", err)
-		return
+		_, _ = fmt.Fprintln(w, "加载配置文件失败:", err)
+		return err
 	}
+	return nil
 }
 
 func GeoFeedPath() string {

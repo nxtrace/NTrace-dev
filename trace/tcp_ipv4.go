@@ -7,10 +7,8 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"os/signal"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/google/gopacket/layers"
@@ -36,22 +34,8 @@ type TCPTracer struct {
 	readyTCP  chan struct{}
 }
 
-func (t *TCPTracer) waitAllReady(ctx context.Context) {
-	timeout := time.After(5 * time.Second)
-	waiting := 2
-	for waiting > 0 {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.readyICMP:
-			waiting--
-		case <-t.readyTCP:
-			waiting--
-		case <-timeout:
-			return
-		}
-	}
-	<-time.After(100 * time.Millisecond)
+func (t *TCPTracer) waitAllReady(ctx context.Context) error {
+	return waitProbeListeners(ctx, t.readyICMP, t.readyTCP)
 }
 
 func (t *TCPTracer) ttlComp(ttl int) bool {
@@ -270,16 +254,19 @@ func (t *TCPTracer) Execute() (res *Result, err error) {
 	)
 	s.SourceDevice = t.SourceDevice
 
-	s.InitICMP()
-	s.InitTCP()
-	defer s.Close()
-
-	baseCtx := t.Context
-	if baseCtx == nil {
-		baseCtx = context.Background()
+	closeSpec := sync.OnceFunc(s.Close)
+	defer closeSpec()
+	if err := s.InitICMP(); err != nil {
+		return nil, wrapProbeSetupError(err)
 	}
-	sigCtx, stop := signal.NotifyContext(baseCtx, os.Interrupt, syscall.SIGTERM)
+	if err := s.InitTCP(); err != nil {
+		return nil, wrapProbeSetupError(err)
+	}
+
+	sigCtx, stop := traceSignalContext(t.Context)
 	ctx, cancel := context.WithCancelCause(sigCtx)
+	defer stop()
+	defer cancel(nil)
 	t.final.Store(-1)
 
 	workerN := 16
@@ -290,15 +277,17 @@ func (t *TCPTracer) Execute() (res *Result, err error) {
 	t.wg.Add(1)
 	go func() {
 		defer t.wg.Done()
-		s.ListenICMP(ctx, t.readyICMP, func(msg internal.ReceivedMessage, finish time.Time, data []byte) {
+		if err := s.ListenICMP(ctx, t.readyICMP, func(msg internal.ReceivedMessage, finish time.Time, data []byte) {
 			t.handleICMPMessage(msg, finish, data)
 		},
-		)
+		); err != nil {
+			cancel(wrapProbeSetupError(err))
+		}
 	}()
 	t.wg.Add(1)
 	go func() {
 		defer t.wg.Done()
-		s.ListenTCP(ctx, t.readyTCP, func(srcPort, seq, ack int, peer net.Addr, finish time.Time) {
+		if err := s.ListenTCP(ctx, t.readyTCP, func(srcPort, seq, ack int, peer net.Addr, finish time.Time) {
 			// 非阻塞投递，队列满则丢弃任务
 			select {
 			case t.matchQ <- matchTask{
@@ -308,9 +297,16 @@ func (t *TCPTracer) Execute() (res *Result, err error) {
 			default:
 				// 丢弃以避免阻塞抓包循环
 			}
-		})
+		}); err != nil {
+			cancel(wrapProbeSetupError(err))
+		}
 	}()
-	t.waitAllReady(ctx)
+	if err := t.waitAllReady(ctx); err != nil {
+		cancel(err)
+		closeSpec()
+		t.wg.Wait()
+		return &t.res, err
+	}
 	t.wg.Add(1)
 	go t.PrintFunc(ctx, cancel)
 

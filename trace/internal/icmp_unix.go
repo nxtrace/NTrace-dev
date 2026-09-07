@@ -34,11 +34,13 @@ func ListenPacket(network string, laddr string) (net.PacketConn, error) {
 }
 
 func (s *ICMPSpec) Close() {
-	_ = s.icmp.Close()
+	if s.icmp != nil {
+		_ = s.icmp.Close()
+	}
 }
 
-func (s *ICMPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, seq int)) {
-	s.listenICMPSock(ctx, ready, onICMP)
+func (s *ICMPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, seq int)) error {
+	return s.listenICMPSock(ctx, ready, onICMP)
 }
 
 func (s *ICMPSpec) SendICMP(ctx context.Context, ipHdr gopacket.NetworkLayer, icmpHdr, icmpEcho gopacket.SerializableLayer, payload []byte) (time.Time, error) {

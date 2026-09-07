@@ -9,12 +9,12 @@ import (
 // mtrWorkerSession owns every cancellable worker created for one MTR run.
 type mtrWorkerSession struct {
 	ctx    context.Context
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 	wg     sync.WaitGroup
 }
 
 func newMTRWorkerSession(parent context.Context) *mtrWorkerSession {
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancelCause(parent)
 	return &mtrWorkerSession{ctx: ctx, cancel: cancel}
 }
 
@@ -27,7 +27,7 @@ func (s *mtrWorkerSession) Go(owner string, fn func()) {
 }
 
 func (s *mtrWorkerSession) shutdown(closeResources func()) {
-	s.cancel()
+	s.cancel(nil)
 	if closeResources != nil {
 		closeResources()
 	}

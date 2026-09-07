@@ -31,22 +31,49 @@ func NewPacketListener(conn net.PacketConn) *PacketListener {
 	return &PacketListener{Conn: conn, Messages: ch, ch: ch}
 }
 
+func startPacketListener(parent context.Context, conn net.PacketConn) (*PacketListener, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	l := NewPacketListener(conn)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		l.Start(ctx)
+	}()
+	return l, func() { cancel(); <-done }
+}
+
+func listenerStoppedError(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+	return errors.New("probe listener stopped unexpectedly")
+}
+
 func (l *PacketListener) Start(ctx context.Context) {
 	defer close(l.ch)
 
+	stopCloser, closerDone := make(chan struct{}), make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		_ = l.Conn.Close()
+		defer close(closerDone)
+		select {
+		case <-ctx.Done():
+			_ = l.Conn.Close()
+		case <-stopCloser:
+		}
 	}()
+	defer func() { close(stopCloser); <-closerDone }()
 
 	buf := make([]byte, 4096)
 
 	for {
 		n, peer, err := l.Conn.ReadFrom(buf)
 		if err != nil {
-			// 连接关闭或 ctx 取消：直接退出
-			if errors.Is(err, net.ErrClosed) || ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return
+			}
+			var timeout net.Error
+			if errors.As(err, &timeout) && timeout.Timeout() {
+				continue
 			}
 
 			// 限时等待投递错误；超时或取消就丢弃/退出
@@ -56,7 +83,7 @@ func (l *PacketListener) Start(ctx context.Context) {
 				return
 			case <-time.After(5 * time.Second):
 			}
-			continue
+			return
 		}
 		if n == 0 {
 			continue

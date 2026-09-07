@@ -34,14 +34,14 @@ func (s *TCPSpec) sourceDeviceUnsupportedErr() error {
 	return fmt.Errorf("source_device %q is not supported on Windows TCP traces", s.SourceDevice)
 }
 
-func (s *TCPSpec) InitTCP() {
+func (s *TCPSpec) InitTCP() error {
 	if err := s.sourceDeviceUnsupportedErr(); err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	handle, err := OpenWinDivertHandle("false", 0)
 	if err != nil {
-		log.Fatal(formatWinDivertRequiredError("Windows TCP 探测", err))
+		return fmt.Errorf("%s: %w", formatWinDivertRequiredError("Windows TCP 探测", err), err)
 	}
 	s.handle = handle
 
@@ -49,11 +49,16 @@ func (s *TCPSpec) InitTCP() {
 	s.addr.SetLayer(wd.LayerNetwork)
 	s.addr.SetEvent(wd.EventNetworkPacket)
 	s.addr.SetOutbound()
+	return nil
 }
 
 func (s *TCPSpec) Close() {
-	_ = s.icmp.Close()
-	_ = s.handle.Close()
+	if s.icmp != nil {
+		_ = s.icmp.Close()
+	}
+	if s.handle != 0 {
+		_ = s.handle.Close()
+	}
 }
 
 // resolveICMPMode 进行最终模式判定
@@ -79,21 +84,25 @@ func (s *TCPSpec) resolveICMPMode() int {
 	return 2
 }
 
-func (s *TCPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, data []byte)) {
+func (s *TCPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, data []byte)) error {
 	switch s.resolveICMPMode() {
 	case 1:
-		s.listenICMPSock(ctx, ready, onICMP)
+		return s.listenICMPSock(ctx, ready, onICMP)
 	case 2:
-		s.listenICMPWinDivert(ctx, ready, onICMP)
+		return s.listenICMPWinDivert(ctx, ready, onICMP)
 	}
+	return nil
 }
 
-func (s *TCPSpec) listenICMPWinDivert(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, data []byte)) {
+func (s *TCPSpec) listenICMPWinDivert(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, data []byte)) error {
 	if err := s.sourceDeviceUnsupportedErr(); err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	sniffHandle, closeHandleICMP := openWinDivertSniffHandle(ctx, winDivertICMPFilter(s.IPVersion, s.SrcIP), "ListenICMP")
+	sniffHandle, closeHandleICMP, err := openWinDivertSniffHandle(ctx, winDivertICMPFilter(s.IPVersion, s.SrcIP), "ListenICMP")
+	if err != nil {
+		return err
+	}
 	defer closeHandleICMP()
 	close(ready)
 
@@ -101,12 +110,12 @@ func (s *TCPSpec) listenICMPWinDivert(ctx context.Context, ready chan struct{}, 
 	var addr wd.Address
 
 	for {
-		raw, finish, ok := receiveWinDivertPacket(ctx, sniffHandle, buf, &addr)
-		if !ok {
+		raw, finish, err := receiveWinDivertPacket(ctx, sniffHandle, buf, &addr)
+		if err != nil {
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
-			continue
+			return err
 		}
 
 		packet, ok := decodeWinDivertICMPPacket(s.IPVersion, raw)
@@ -121,16 +130,19 @@ func (s *TCPSpec) listenICMPWinDivert(ctx context.Context, ready chan struct{}, 
 	}
 }
 
-func (s *TCPSpec) ListenTCP(ctx context.Context, ready chan struct{}, onTCP func(srcPort, seq, ack int, peer net.Addr, finish time.Time)) {
+func (s *TCPSpec) ListenTCP(ctx context.Context, ready chan struct{}, onTCP func(srcPort, seq, ack int, peer net.Addr, finish time.Time)) error {
 	if err := s.sourceDeviceUnsupportedErr(); err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	sniffHandle, closeHandleTCP := openWinDivertSniffHandle(
+	sniffHandle, closeHandleTCP, err := openWinDivertSniffHandle(
 		ctx,
 		winDivertTCPFilter(s.IPVersion, s.SrcIP, s.DstPort),
 		"ListenTCP",
 	)
+	if err != nil {
+		return err
+	}
 	defer closeHandleTCP()
 
 	close(ready)
@@ -139,12 +151,12 @@ func (s *TCPSpec) ListenTCP(ctx context.Context, ready chan struct{}, onTCP func
 	var addr wd.Address
 
 	for {
-		raw, finish, ok := receiveWinDivertPacket(ctx, sniffHandle, buf, &addr)
-		if !ok {
+		raw, finish, err := receiveWinDivertPacket(ctx, sniffHandle, buf, &addr)
+		if err != nil {
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
-			continue
+			return err
 		}
 
 		srcPort, seq, ack, peer, ok := decodeWinDivertTCPPacket(s.IPVersion, raw, s.DstPort)

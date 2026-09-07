@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"sync"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
-	"github.com/nxtrace/NTrace-core/util"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 )
@@ -266,15 +264,12 @@ func darwinICMPSocketSpecForNetwork(network string) (darwinICMPSocketSpec, error
 	return darwinICMPSocketSpec{af: syscall.AF_INET, proto: syscall.IPPROTO_ICMP}, nil
 }
 
-func mustOpenDarwinICMPSocket(spec darwinICMPSocketSpec) int {
+func openDarwinICMPSocket(spec darwinICMPSocketSpec) (int, error) {
 	fd, err := syscall.Socket(spec.af, syscall.SOCK_DGRAM, spec.proto)
 	if err != nil {
-		if util.EnvDevMode {
-			panic(fmt.Errorf("ListenPacket: socket: %w", err))
-		}
-		log.Fatalf("ListenPacket: socket: %v", err)
+		return -1, fmt.Errorf("ListenPacket: socket: %w", err)
 	}
-	return fd
+	return fd, nil
 }
 
 func interfaceHasIP(iface net.Interface, target net.IP) bool {
@@ -366,10 +361,7 @@ func finalizeDarwinICMPSocket(fd, af int) (net.PacketConn, error) {
 	rc, err := f.SyscallConn()
 	if err != nil {
 		_ = f.Close()
-		if util.EnvDevMode {
-			panic(fmt.Errorf("ListenPacket: SyscallConn: %w", err))
-		}
-		log.Fatalf("ListenPacket: SyscallConn: %v", err)
+		return nil, fmt.Errorf("ListenPacket: SyscallConn: %w", err)
 	}
 
 	return &icmpPacketConn{file: f, rc: rc, af: af}, nil
@@ -381,7 +373,10 @@ func ListenPacket(network string, laddr string) (net.PacketConn, error) {
 		return nil, err
 	}
 
-	fd := mustOpenDarwinICMPSocket(spec)
+	fd, err := openDarwinICMPSocket(spec)
+	if err != nil {
+		return nil, err
+	}
 	if err := bindDarwinICMPInterface(fd, spec.proto, laddr); err != nil {
 		_ = syscall.Close(fd)
 		return nil, err
@@ -395,11 +390,13 @@ func ListenPacket(network string, laddr string) (net.PacketConn, error) {
 }
 
 func (s *ICMPSpec) Close() {
-	_ = s.icmp.Close()
+	if s.icmp != nil {
+		_ = s.icmp.Close()
+	}
 }
 
-func (s *ICMPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, seq int)) {
-	s.listenICMPSock(ctx, ready, onICMP)
+func (s *ICMPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, seq int)) error {
+	return s.listenICMPSock(ctx, ready, onICMP)
 }
 
 func (s *ICMPSpec) SendICMP(ctx context.Context, ipHdr gopacket.NetworkLayer, icmpHdr, icmpEcho gopacket.SerializableLayer, payload []byte) (time.Time, error) {

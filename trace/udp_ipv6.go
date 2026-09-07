@@ -7,10 +7,8 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"os/signal"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/google/gopacket/layers"
@@ -33,25 +31,10 @@ type UDPTracerIPv6 struct {
 	sem       *semaphore.Weighted
 	matchQ    chan matchTask
 	readyICMP chan struct{}
-	readyUDP  chan struct{}
 }
 
-func (t *UDPTracerIPv6) waitAllReady(ctx context.Context) {
-	timeout := time.After(5 * time.Second)
-	waiting := 2
-	for waiting > 0 {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.readyICMP:
-			waiting--
-		case <-t.readyUDP:
-			waiting--
-		case <-timeout:
-			return
-		}
-	}
-	<-time.After(100 * time.Millisecond)
+func (t *UDPTracerIPv6) waitAllReady(ctx context.Context) error {
+	return waitProbeListeners(ctx, t.readyICMP)
 }
 
 func (t *UDPTracerIPv6) ttlComp(ttl int) bool {
@@ -232,7 +215,6 @@ func (t *UDPTracerIPv6) Execute() (res *Result, err error) {
 
 	// 创建就绪通道
 	t.readyICMP = make(chan struct{})
-	t.readyUDP = make(chan struct{})
 
 	if len(t.res.Hops) > 0 {
 		return &t.res, errTracerouteExecuted
@@ -262,16 +244,19 @@ func (t *UDPTracerIPv6) Execute() (res *Result, err error) {
 	)
 	s.SourceDevice = t.SourceDevice
 
-	s.InitICMP()
-	s.InitUDP()
-	defer s.Close()
-
-	baseCtx := t.Context
-	if baseCtx == nil {
-		baseCtx = context.Background()
+	closeSpec := sync.OnceFunc(s.Close)
+	defer closeSpec()
+	if err := s.InitICMP(); err != nil {
+		return nil, wrapProbeSetupError(err)
 	}
-	sigCtx, stop := signal.NotifyContext(baseCtx, os.Interrupt, syscall.SIGTERM)
+	if err := s.InitUDP(); err != nil {
+		return nil, wrapProbeSetupError(err)
+	}
+
+	sigCtx, stop := traceSignalContext(t.Context)
 	ctx, cancel := context.WithCancelCause(sigCtx)
+	defer stop()
+	defer cancel(nil)
 	t.final.Store(-1)
 
 	workerN := 16
@@ -282,12 +267,19 @@ func (t *UDPTracerIPv6) Execute() (res *Result, err error) {
 	t.wg.Add(1)
 	go func() {
 		defer t.wg.Done()
-		s.ListenICMP(ctx, t.readyICMP, func(msg internal.ReceivedMessage, finish time.Time, data []byte) {
+		if err := s.ListenICMP(ctx, t.readyICMP, func(msg internal.ReceivedMessage, finish time.Time, data []byte) {
 			t.handleICMPMessage(msg, finish, data)
 		},
-		)
+		); err != nil {
+			cancel(wrapProbeSetupError(err))
+		}
 	}()
-	t.waitAllReady(ctx)
+	if err := t.waitAllReady(ctx); err != nil {
+		cancel(err)
+		closeSpec()
+		t.wg.Wait()
+		return &t.res, err
+	}
 	t.wg.Add(1)
 	go t.PrintFunc(ctx, cancel)
 

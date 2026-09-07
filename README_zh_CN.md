@@ -622,6 +622,20 @@ nexttrace -r --raw 1.1.1.1
 nexttrace -t --tcp --max-hops 20 --first 3 --no-rdns 8.8.8.8
 ```
 
+三个版本均支持 MTR JSON：
+
+```bash
+nexttrace --mtr --json 1.1.1.1        # 持续输出 NDJSON 事件
+nexttrace --mtr --json -q 10 1.1.1.1  # 限次输出 NDJSON 事件
+nexttrace -r --json -q 10 1.1.1.1     # 结束后输出一个汇总 JSON
+nexttrace -w --json -q 10 1.1.1.1     # 与 -r --json 完全等价
+ntr --json 1.1.1.1                    # 持续输出 NDJSON 事件
+```
+
+JSON 固定输出完整可用元数据（FULL），忽略 `-y`，仍遵守 Geo/PTR、数据源及语言设置。`-r/-w --json` 共用 wide 采集规则。实时模式省略 `-q` 或传非正值表示无限运行；JSON 报告默认每跳 10 次，显式非正值报错。MTR 中 `--raw` 与 `--json` 互斥。full/tiny 单独 `--json` 保持传统 traceroute JSON，未来默认模式切换后也保持此行为。
+
+NDJSON 输出 `start`、`probe`、`path_end`、`end` 事件，`seq` 连续递增。报告只输出一个对象，中断或失败时保留已有统计。诊断写入 stderr。退出码：完成 `0`，初始化/执行错误 `1`，参数错误 `2`，SIGINT `130`，SIGTERM `143`。完成不表示目的地可达，可达性读取 `path_end`。详见 [MTR JSON v1 契约及示例](docs/mtr-json.md)。
+
 在终端（TTY）中运行时，MTR 模式使用**交互式全屏 TUI**：
 
 - **`q` / `Q`** — 退出（恢复终端，不留下输出）
@@ -692,7 +706,7 @@ raw stdout 契约仍严格保持 12 列。无限运行的 MTR 中，unreachable 
 
 > 注意：`--show-ips` 仅在 MTR 模式（`--mtr`、`-r`、`-w`）生效，其他模式会忽略。
 >
-> 注意：`--mtr` 不可与 `--traceroute`、`--table`、`--classic`、`--json`、`--output`、`--output-default`、`--route-path`、`--from`、`--fast-trace`、`--file`、`--deploy` 同时使用。
+> 注意：`--mtr` 不可与 `--traceroute`、`--table`、`--classic`、`--output`、`--output-default`、`--route-path`、`--from`、`--fast-trace`、`--file`、`--deploy` 同时使用。
 
 #### `NextTrace`支持用户自主选择 IP 数据库（目前支持：`NextTrace-API`, `IP.SB`, `IPInfo`, `IPInsight`, `IPAPI.com`, `IPInfoLocal`, `IPDB.One`, `CHUNZHEN`, `DN42`）
 
@@ -868,9 +882,10 @@ Arguments:
                                      default of 80 for "tcp", 33494 for "udp"
   -q  --queries                      Traceroute: latency samples per hop
                                      (default 3). MTR: max probes per hop. 0 =
-                                     unlimited in TUI/raw. When omitted: 10
-                                     with --report/--wide (including --raw),
-                                     otherwise unlimited
+                                     unlimited in TUI/raw/JSON streams. JSON
+                                     reports require a positive count. When
+                                     omitted: 10 with --report/--wide
+                                     (including --raw), otherwise unlimited
       --max-attempts                 Advanced: hard cap on probe packets per
                                      hop. Leave unset for auto sizing; raise on
                                      lossy links if --queries is not enough
@@ -905,7 +920,8 @@ Arguments:
                                      (/tmp/trace.log)
       --table                        Output trace results as a final summary
                                      table (traceroute report mode)
-  -j  --json                         Output trace results as JSON
+  -j  --json                         Output JSON; MTR streams NDJSON unless
+                                     --report/--wide is selected
   -c  --classic                      Classic Output trace results like
                                      BestTrace
       --dn42                         DN42 Mode
@@ -981,7 +997,7 @@ Arguments:
       --show-ips                     MTR only: display both PTR hostnames and
                                      numeric IPs (PTR first, IP in parentheses)
   -y  --ipinfo                       Set initial MTR TUI host info mode (0-4).
-                                     TUI only; ignored in --report/--raw.
+                                     TUI only; ignored in --report/--raw/--json.
                                      0:IP/PTR 1:ASN 2:City 3:Owner 4:Full.
                                      Default: 0
       --file                         Read IP Address or domain name from file

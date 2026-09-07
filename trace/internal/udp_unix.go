@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -34,7 +33,7 @@ type UDPSpec struct {
 	mtu          int
 }
 
-func (s *UDPSpec) InitUDP() {
+func (s *UDPSpec) InitUDP() error {
 	network := "ip4:udp"
 	if s.IPVersion == 6 {
 		network = "ip6:udp"
@@ -42,18 +41,12 @@ func (s *UDPSpec) InitUDP() {
 
 	udp, err := net.ListenPacket(network, s.SrcIP.String())
 	if err != nil {
-		if util.EnvDevMode {
-			panic(fmt.Errorf("(InitUDP) ListenPacket(%s, %s) failed: %v", network, s.SrcIP, err))
-		}
-		log.Fatalf("(InitUDP) ListenPacket(%s, %s) failed: %v", network, s.SrcIP, err)
+		return fmt.Errorf("(InitUDP) ListenPacket(%s, %s) failed: %w", network, s.SrcIP, err)
 	}
 	if s.SourceDevice != "" {
 		if err := bindPacketConnToSourceDevice(udp, s.IPVersion, s.SourceDevice); err != nil {
 			_ = udp.Close()
-			if util.EnvDevMode {
-				panic(fmt.Errorf("(InitUDP) bind source device %q failed: %v", s.SourceDevice, err))
-			}
-			log.Fatalf("(InitUDP) bind source device %q failed: %v", s.SourceDevice, err)
+			return fmt.Errorf("(InitUDP) bind source device %q failed: %w", s.SourceDevice, err)
 		}
 	}
 	s.udp = udp
@@ -61,11 +54,9 @@ func (s *UDPSpec) InitUDP() {
 	if s.IPVersion == 4 {
 		s.udp4, err = ipv4.NewRawConn(s.udp)
 		if err != nil {
-			s.Close()
-			if util.EnvDevMode {
-				panic(fmt.Errorf("(InitUDP) create NewRawConn failed: %v", err))
-			}
-			log.Fatalf("(InitUDP) create NewRawConn failed: %v", err)
+			_ = udp.Close()
+			s.udp = nil
+			return fmt.Errorf("(InitUDP) create NewRawConn failed: %w", err)
 		}
 
 		// 获取本地接口的 MTU
@@ -77,18 +68,24 @@ func (s *UDPSpec) InitUDP() {
 	} else {
 		s.udp6 = ipv6.NewPacketConn(s.udp)
 	}
+	return nil
 }
 
 func (s *UDPSpec) Close() {
-	_ = s.icmp.Close()
-	_ = s.udp.Close()
+	if s.icmp != nil {
+		_ = s.icmp.Close()
+	}
+	if s.udp != nil {
+		_ = s.udp.Close()
+	}
 }
 
-func (s *UDPSpec) ListenOut(_ context.Context, _ chan struct{}, _ func(srcPort, seq, ttl int, start time.Time)) {
+func (s *UDPSpec) ListenOut(_ context.Context, _ chan struct{}, _ func(srcPort, seq, ttl int, start time.Time)) error {
+	return nil
 }
 
-func (s *UDPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, data []byte)) {
-	s.listenICMPSock(ctx, ready, onICMP)
+func (s *UDPSpec) ListenICMP(ctx context.Context, ready chan struct{}, onICMP func(msg ReceivedMessage, finish time.Time, data []byte)) error {
+	return s.listenICMPSock(ctx, ready, onICMP)
 }
 
 func serializeUDPPacket(payload []byte, layersToSerialize ...gopacket.SerializableLayer) ([]byte, error) {

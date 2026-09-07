@@ -393,6 +393,35 @@ function Wait-CaptureReady {
     return -not $Process.HasExited
 }
 
+function Check-MtrJson {
+    param([string]$Name, [string]$Mode, [string]$Binary, [string]$Flags)
+    $out = Join-Path $ArtifactsDir "$Name.json"
+    $command = "`"$Binary`" $Flags --json --data-provider disable-geoip -n -q 2 -i 100 --timeout 500 -m 1 127.0.0.1"
+    $rc = Invoke-CommandWithTimeout -Command $command -OutFile $out -MergeStreams $false -Seconds 30
+    if ($rc -ne 0) {
+        Write-Record $Name FAIL "MTR JSON exit=$rc"
+        return
+    }
+    try {
+        $content = Get-Content -Raw -Encoding UTF8 -Path $out
+        if ($Mode -eq "report") {
+            $report = $content | ConvertFrom-Json -ErrorAction Stop
+            if ($report.schema_version -ne 1 -or $report.end_reason -ne "completed" -or @($report.stats).Count -eq 0) { throw "invalid report" }
+            if (($report.stats | Measure-Object -Property snt -Sum).Sum -ne 2) { throw "wrong probe count" }
+        } else {
+            $events = @($content.Trim() -split '\r?\n' | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop })
+            if ($events[0].type -ne "start" -or $events[-1].type -ne "end" -or $events[-1].end_reason -ne "completed") { throw "invalid lifecycle" }
+            for ($i = 0; $i -lt $events.Count; $i++) {
+                if ($events[$i].seq -ne ($i + 1) -or $events[$i].schema_version -ne 1) { throw "invalid sequence/schema" }
+            }
+            if (@($events | Where-Object { $_.type -eq "probe" }).Count -ne 2) { throw "wrong probe count" }
+        }
+        Write-Record $Name PASS "MTR JSON $Mode contract"
+    } catch {
+        Write-Record $Name FAIL "MTR JSON $Mode contract: $_"
+    }
+}
+
 function Check-JsonPure {
     param(
         [string]$Name,
@@ -765,6 +794,18 @@ Check-OutputFileIfSupported $icmp4Capability.Supported $icmp4Capability.Reason "
 Run-CmdIfSupported $mtuCapability.Supported $mtuCapability.Reason "mtu_text" "MTU text mode" "`"$Bin`" --no-color --mtu --timeout 1000 -q 1 -m 3 1.1.1.1" "Path MTU:"
 Write-Record mtu_tty_color SKIP "MTU TTY colorized output; no portable Windows PTY capture in this script"
 Run-CmdIfSupported $mtuCapability.Supported $mtuCapability.Reason "mtu_non_tty_plain" "MTU non-TTY output has no ANSI" "`"$Bin`" --mtu --timeout 1000 -q 1 -m 3 1.1.1.1" "Path MTU:" "\x1b\[[0-9;]*[A-Za-z]"
+if ($mtrCapability.Supported) {
+    Check-MtrJson "mtr_json_live" "stream" $Bin "--mtr"
+    Check-MtrJson "mtr_json_report" "report" $Bin "-r"
+    Check-MtrJson "mtr_json_wide" "report" $Bin "-w"
+    Check-MtrJson "tiny_json_live" "stream" $Tiny "--mtr -y 4"
+    Check-MtrJson "tiny_json_report" "report" $Tiny "-r"
+    Check-MtrJson "ntr_json_live" "stream" $Ntr ""
+    Check-MtrJson "ntr_json_report" "report" $Ntr "-w"
+} else {
+    Write-Record "mtr_json" SKIP $mtrCapability.Reason
+}
+
 Run-CmdIfSupported $mtrCapability.Supported $mtrCapability.Reason "mtr_report" "MTR report ICMP" "`"$Bin`" --no-color -r -q 2 -i 300 --timeout 1000 -m 4 1.1.1.1" "(?m)^HOST:"
 Run-CmdIfSupported $mtrCapability.Supported $mtrCapability.Reason "mtr_wide" "MTR wide + show-ips" "`"$Bin`" --no-color -w --show-ips -q 2 -i 300 --timeout 1000 -m 4 1.1.1.1" "(?m)^HOST:"
 Run-CmdIfSupported $mtrCapability.Supported $mtrCapability.Reason "mtr_raw" "MTR raw stream" "`"$Bin`" --no-color -r --raw -q 2 -i 300 --timeout 1000 -m 4 1.1.1.1" "(?m)^1\|"

@@ -7,10 +7,8 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"os/signal"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/google/gopacket/layers"
@@ -36,20 +34,8 @@ type ICMPTracer struct {
 	readyICMP chan struct{}
 }
 
-func (t *ICMPTracer) waitAllReady(ctx context.Context) {
-	timeout := time.After(5 * time.Second)
-	waiting := 1
-	for waiting > 0 {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.readyICMP:
-			waiting--
-		case <-timeout:
-			return
-		}
-	}
-	<-time.After(100 * time.Millisecond)
+func (t *ICMPTracer) waitAllReady(ctx context.Context) error {
+	return waitProbeListeners(ctx, t.readyICMP)
 }
 
 func (t *ICMPTracer) ttlComp(ttl int) bool {
@@ -269,15 +255,16 @@ func (t *ICMPTracer) Execute() (res *Result, err error) {
 	)
 	applyICMPSourceDevice(s, t.OSType, t.SourceDevice)
 
-	s.InitICMP()
-	defer s.Close()
-
-	baseCtx := t.Context
-	if baseCtx == nil {
-		baseCtx = context.Background()
+	closeSpec := sync.OnceFunc(s.Close)
+	defer closeSpec()
+	if err := s.InitICMP(); err != nil {
+		return nil, wrapProbeSetupError(err)
 	}
-	sigCtx, stop := signal.NotifyContext(baseCtx, os.Interrupt, syscall.SIGTERM)
+
+	sigCtx, stop := traceSignalContext(t.Context)
 	ctx, cancel := context.WithCancelCause(sigCtx)
+	defer stop()
+	defer cancel(nil)
 	t.final.Store(-1)
 
 	workerN := 16
@@ -288,12 +275,19 @@ func (t *ICMPTracer) Execute() (res *Result, err error) {
 	t.wg.Add(1)
 	go func() {
 		defer t.wg.Done()
-		s.ListenICMP(ctx, t.readyICMP, func(msg internal.ReceivedMessage, finish time.Time, seq int) {
+		if err := s.ListenICMP(ctx, t.readyICMP, func(msg internal.ReceivedMessage, finish time.Time, seq int) {
 			t.handleICMPMessage(msg, finish, seq)
 		},
-		)
+		); err != nil {
+			cancel(wrapProbeSetupError(err))
+		}
 	}()
-	t.waitAllReady(ctx)
+	if err := t.waitAllReady(ctx); err != nil {
+		cancel(err)
+		closeSpec()
+		t.wg.Wait()
+		return &t.res, err
+	}
 	t.wg.Add(1)
 	go t.PrintFunc(ctx, cancel)
 

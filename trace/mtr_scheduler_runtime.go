@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -194,6 +195,9 @@ func (rt *mtrSchedulerRuntime) run() error {
 			return rt.handleCancel()
 		case cp := <-rt.resultCh:
 			rt.processResult(cp)
+			if rt.ctx.Err() != nil {
+				return rt.handleCancel()
+			}
 			if rt.isDone() {
 				rt.finishRun()
 				return nil
@@ -310,6 +314,11 @@ func (rt *mtrSchedulerRuntime) processResult(cp mtrCompletedProbe) {
 }
 
 func (rt *mtrSchedulerRuntime) processProbeError(ttl int, err error, doneAt time.Time) {
+	var setup *probeSetupError
+	if errors.As(err, &setup) {
+		rt.workers.cancel(err)
+		return
+	}
 	if rt.ctx.Err() != nil {
 		return
 	}
@@ -843,5 +852,5 @@ func (rt *mtrSchedulerRuntime) handleReset() {
 
 func (rt *mtrSchedulerRuntime) handleCancel() error {
 	rt.maybeSnapshot(true)
-	return rt.ctx.Err()
+	return context.Cause(rt.ctx)
 }
