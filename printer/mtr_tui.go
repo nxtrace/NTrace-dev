@@ -387,7 +387,7 @@ func mtrTUIRenderWithSize(w io.Writer, header MTRTUIHeader, stats []trace.MTRHop
 	var b strings.Builder
 	writeMTRTUIFramePrefix(&b)
 	b.WriteString(buildMTRTUIFrame(header, stats, termWidth, termHeight))
-	fmt.Fprint(w, b.String())
+	_, _ = fmt.Fprint(w, b.String())
 }
 
 // buildMTRTUIFrame produces styled CRLF-separated rows without cursor or erase commands.
