@@ -220,7 +220,7 @@
       "internal/routeprobe/**/*.go",
       "internal/routeprobe/**/testdata/**",
       "server/web/**",
-      "scripts/perf/**",
+      "scripts/perf/*.sh",
       "assets/windivert/**"
     ]
   },

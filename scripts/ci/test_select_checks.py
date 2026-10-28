@@ -18,10 +18,13 @@ class SelectionTests(unittest.TestCase):
         return {k for k, v in ci.classify(paths, self.rules).items() if v}
 
     def test_docs_do_not_trigger_checks(self):
-        self.assertEqual(self.selected("README.md", "docs/mtr-session.md"), set())
-        for workflow in ci.WORKFLOWS:
-            self.assertFalse(any(ci.matches("docs/mtr-session.md", p)
-                                 for c in ci.WORKFLOWS[workflow] for p in self.rules[c]))
+        for path in ("README.md", "docs/mtr-session.md", "scripts/perf/README.md",
+                     "scripts/regression/README.md"):
+            self.assertEqual(self.selected(path), set())
+            for workflow in ci.WORKFLOWS:
+                with self.subTest(path=path, workflow=workflow):
+                    self.assertFalse(any(ci.matches(path, p)
+                                         for c in ci.WORKFLOWS[workflow] for p in self.rules[c]))
 
     def test_printer_selects_go_and_pty_without_packet_acceptance(self):
         path = "printer/mtr_screen.go"
