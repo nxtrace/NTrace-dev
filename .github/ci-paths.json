@@ -10,7 +10,8 @@
   "groups": {
     "go": [
       "**/*.go",
-      "**/testdata/**"
+      "**/testdata/**",
+      "assets/windivert/**"
     ],
     "probe": [
       "config/**/*.go",
@@ -36,7 +37,13 @@
       "cmd/mtr_mode*.go",
       "cmd/mtr_json_run*.go",
       "cmd/fwmark*.go",
-      "cmd/tos*.go"
+      "cmd/tos*.go",
+      "cmd/mtr_json*.go",
+      "cmd/doctor*.go",
+      "internal/mtrsession/**/*.go",
+      "internal/mtrsession/**/testdata/**",
+      "printer/mtr_raw*.go",
+      "assets/windivert/**"
     ],
     "pty": [
       "config/**/*.go",
@@ -65,7 +72,10 @@
       "internal/hoprender/**/testdata/**",
       "cmd/mtr*.go",
       "scripts/test_mtr*_pty.py",
-      "scripts/mtr_pty_screen.py"
+      "scripts/mtr_pty_screen.py",
+      "cmd/fwmark*.go",
+      "cmd/doctor*.go",
+      "assets/windivert/**"
     ],
     "doctor": [
       "config/**/*.go",
@@ -122,7 +132,8 @@
       "**/*.go",
       "**/testdata/**",
       "server/web/**",
-      ".cross_compile.sh"
+      ".cross_compile.sh",
+      "assets/windivert/**"
     ],
     "lint": [
       "**/*.go",
@@ -172,7 +183,8 @@
       "scripts/regression/unix.sh",
       "scripts/regression/linux.sh",
       "scripts/regression/macos.sh",
-      "scripts/regression/windows.ps1"
+      "scripts/regression/windows.ps1",
+      "assets/windivert/**"
     ],
     "performance": [
       "dn42/**/*.go",
@@ -208,7 +220,8 @@
       "internal/routeprobe/**/*.go",
       "internal/routeprobe/**/testdata/**",
       "server/web/**",
-      "scripts/perf/**"
+      "scripts/perf/**",
+      "assets/windivert/**"
     ]
   },
   "checks": {

@@ -7,8 +7,9 @@ PR 和 main push 使用相同的路径规则；发版 tag 仍运行完整构建�
 
 | 检查 | 相关改动 |
 | --- | --- |
-| 三平台 Go 测试、race、JSON 兼容、lint、全平台构建 | Go 文件、testdata、依赖、PGO 和各自配置；构建另包含嵌入的 Web 资源 |
-| TOS、fwmark | trace、routeprobe、公共配置及工具、探测 CLI 入口、各自验收脚本 |
+| 三平台 Go 测试、race、JSON 兼容、全平台构建 | Go 文件、testdata、依赖、PGO、WinDivert 嵌入资源和各自配置；构建另包含嵌入的 Web 资源 |
+| lint | Go 文件、testdata、依赖、PGO 及 lint 配置 |
+| TOS、fwmark | trace、routeprobe、公共配置及工具、探测 CLI、MTR JSON / RAW 输出契约、WinDivert 资源、各自验收脚本 |
 | MTR PTY / ConPTY | MTR CLI、printer、hoprender、mtrsession、trace、公共初始化依赖、所有 PTY 脚本及共享屏幕模型 |
 | Doctor 集成 | Doctor、routeprobe、trace、公共初始化依赖及 CLI 入口 |
 | DNS q 对照 | dnsclient、DNS CLI、公共 CLI 注册和配置 |

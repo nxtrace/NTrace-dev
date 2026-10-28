@@ -35,6 +35,16 @@ class SelectionTests(unittest.TestCase):
         for check in ("tos", "fwmark", "regression", "performance"):
             self.assertTrue(any(ci.matches(path, p) for p in self.rules[check]), check)
 
+    def test_acceptance_runtime_dependencies_are_not_skipped(self):
+        for path in ("cmd/mtr_json.go", "internal/mtrsession/model.go",
+                     "printer/mtr_raw.go", "assets/windivert/divert.go",
+                     "assets/windivert/x64/WinDivert64.sys"):
+            for check in ("tos", "fwmark"):
+                with self.subTest(path=path, check=check):
+                    self.assertTrue(any(ci.matches(path, p) for p in self.rules[check]))
+        self.assertIn("pty", self.selected("cmd/fwmark.go"))
+        self.assertIn("go", self.selected("assets/windivert/x64/WinDivert.dll"))
+
     def test_specialized_changes(self):
         cases = {
             "internal/dnsclient/transport.go": {"go", "dns"},
