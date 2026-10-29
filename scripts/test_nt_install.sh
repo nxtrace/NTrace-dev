@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+# Temporary path-selection acceptance for PR #258; this branch is not merged.
+
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALLER="${ROOT_DIR}/nt_install.sh"
 REAL_UNAME="$(command -v uname)"
