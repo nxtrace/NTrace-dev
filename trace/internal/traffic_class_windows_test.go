@@ -3,9 +3,11 @@
 package internal
 
 import (
+	"errors"
 	"net"
 	"testing"
 
+	"github.com/google/gopacket/layers"
 	"golang.org/x/net/ipv6"
 )
 
@@ -26,5 +28,59 @@ func TestSetIPv6TrafficClassSkipsOnlyZeroOnWindows(t *testing.T) {
 	}
 	if err := setIPv6TrafficClass(packetConn, 46); err == nil {
 		t.Fatal("nonzero Traffic Class unexpectedly bypassed socket setup")
+	}
+}
+
+func TestIPv6SendersSkipZeroTrafficClassOnWindows(t *testing.T) {
+	ip6 := &layers.IPv6{
+		Version:  6,
+		HopLimit: 1,
+		SrcIP:    net.IPv6loopback,
+		DstIP:    net.IPv6loopback,
+	}
+
+	t.Run("icmp", func(t *testing.T) {
+		conn, packetConn := closedIPv6Socket(t)
+		s := ICMPSpec{IPVersion: 6, icmp: conn, icmp6: packetConn}
+		_, err := s.SendICMP(t.Context(), ip6,
+			&layers.ICMPv6{TypeCode: layers.CreateICMPv6TypeCode(128, 0)},
+			&layers.ICMPv6Echo{}, nil)
+		assertNoIPv6TrafficClassInitializationError(t, err)
+	})
+	t.Run("tcp", func(t *testing.T) {
+		conn, packetConn := closedIPv6Socket(t)
+		s := TCPSpec{IPVersion: 6, tcp: conn, tcp6: packetConn}
+		_, err := s.SendTCP(t.Context(), ip6, &layers.TCP{}, nil)
+		assertNoIPv6TrafficClassInitializationError(t, err)
+	})
+	t.Run("udp", func(t *testing.T) {
+		conn, packetConn := closedIPv6Socket(t)
+		s := UDPSpec{IPVersion: 6, udp: conn, udp6: packetConn}
+		_, err := s.SendUDP(t.Context(), ip6, &layers.UDP{}, nil)
+		assertNoIPv6TrafficClassInitializationError(t, err)
+	})
+}
+
+func closedIPv6Socket(t *testing.T) (net.PacketConn, *ipv6.PacketConn) {
+	t.Helper()
+	conn, err := net.ListenPacket("udp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback is unavailable: %v", err)
+	}
+	packetConn := ipv6.NewPacketConn(conn)
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return conn, packetConn
+}
+
+func assertNoIPv6TrafficClassInitializationError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected the closed socket to reject the probe")
+	}
+	var setup *InitializationError
+	if errors.As(err, &setup) {
+		t.Fatalf("sender returned Traffic Class initialization error: %v", err)
 	}
 }
